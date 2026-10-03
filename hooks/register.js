@@ -508,17 +508,72 @@ async function translateAnswered($, input, output) {
   if (!lists.length) return null
   const texts = [...new Set(lists.flat().map((q) => q && q.question).filter((q) => typeof q === 'string'))]
   const got = await translations($, texts)
-  if (got.every((t) => t === undefined)) return null
   const drawn = new Map(texts.map((t, i) => [t, bilingual(t, got[i])]))
   const questions = (list) => (Array.isArray(list) ? list.map((q) => (q && drawn.has(q.question) ? { ...q, question: drawn.get(q.question) } : q)) : list)
   const rekey = (obj) => (obj && typeof obj === 'object' && !Array.isArray(obj) ? Object.fromEntries(Object.entries(obj).map(([k, v]) => [drawn.get(k) ?? k, v])) : obj)
+  let answers = output && output.answers
+  if (answers && typeof answers === 'object' && !Array.isArray(answers)) {
+    answers = {}
+    for (const [k, v] of Object.entries(output.answers)) answers[drawn.get(k) ?? k] = await drawnAnswer($, v)
+  }
+  const response = output && typeof output.response === 'string' ? await drawnAnswer($, output.response) : undefined
+  const same = got.every((t) => t === undefined) && (!answers || Object.entries(answers).every(([k, v]) => output.answers[k] === v)) && response === (output && output.response)
+  if (same) return null
   return {
     input: input && Array.isArray(input.questions) ? { ...input, questions: questions(input.questions) } : input,
     output:
       output && typeof output === 'object'
-        ? { ...output, ...(Array.isArray(output.questions) && { questions: questions(output.questions) }), ...(output.answers && { answers: rekey(output.answers) }), ...(output.annotations && { annotations: rekey(output.annotations) }) }
+        ? {
+            ...output,
+            ...(Array.isArray(output.questions) && { questions: questions(output.questions) }),
+            ...(answers && { answers }),
+            ...(response !== undefined && { response }),
+            ...(output.annotations && { annotations: rekey(output.annotations) }),
+          }
         : output,
   }
+}
+
+// Whether an answer is text the user typed, not an option's label (or, multi-select, labels
+// joined by commas): only typed text is translated to English
+function typedAnswer(asked, question, value) {
+  const q = Array.isArray(asked) ? asked.find((x) => x && x.question === question) : null
+  const labels = new Set(((q && q.options) || []).map((o) => o && o.label))
+  return !labels.size || !value.split(', ').every((v) => labels.has(v))
+}
+
+// The result of an answered question with the text the user typed translated to English, as a
+// prompt is; what was typed is kept (with the prompts) so the row draws it. Null when nothing
+// was translated.
+async function translateAnswers($, asked, result) {
+  const out = { ...result }
+  let changed = false
+  const toEnglish = async (typed) => {
+    const en = await translate($, typed, 'en')
+    if (!en || en === typed) return null
+    remember(prompts, en, typed)
+    save($, 'prompts', en, typed)
+    changed = true
+    return en
+  }
+  if (result.answers && typeof result.answers === 'object' && !Array.isArray(result.answers)) {
+    const answers = {}
+    for (const [question, value] of Object.entries(result.answers)) {
+      const typed = typeof value === 'string' && value.trim() && typedAnswer(asked, question, value)
+      answers[question] = (typed && (await toEnglish(value))) || value
+    }
+    out.answers = answers
+  }
+  if (typeof result.response === 'string' && result.response.trim()) out.response = (await toEnglish(result.response)) || result.response
+  return changed ? out : null
+}
+
+// An answer as the row draws it: what the user typed, with the English that was sent in
+// parentheses; an answer that was sent as given draws as is
+async function drawnAnswer($, value) {
+  if (typeof value !== 'string') return value
+  const typed = prompts.get(value) ?? (await loadSaved($)).prompts.get(value)
+  return typed ? typed + ' (' + value + ')' : value
 }
 
 // The settings pane, and what it offers
@@ -877,6 +932,17 @@ export function register(on, options = {}) {
     if (e.props.tool !== 'AskUserQuestion' || e.props.isErrored || !(await isEnabled($))) return next(e)
     const t = await translateAnswered($, null, e.props.output)
     return next(t ? { ...e, props: { ...e.props, output: t.output } } : e)
+  })
+
+  // Input: text typed as an answer to a question (under "Other", or a text question) reaches
+  // Claude in English, as a prompt does; an option picked is sent as it is
+  on('tool.call', { tool: 'AskUserQuestion' }, async ($, e, next) => {
+    const r = await next(e)
+    if (!r || r.deny || !r.result || typeof r.result !== 'object' || r.isError) return r
+    if (!(await isEnabled($))) return r
+    const result = await translateAnswers($, e.questions, r.result)
+    if (!result) return r
+    return { result, ...(r.context && { context: r.context }) }
   })
 
   // The translator tools are for this mod only: let its own calls through, refuse Claude's

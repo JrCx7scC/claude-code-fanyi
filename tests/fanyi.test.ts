@@ -372,3 +372,22 @@ test('the row of an answered question draws each question bilingual, its answers
   expect(result.questions[0].question).toBe(q)
   expect(result.answers).toEqual({ [q]: 'Alpha' })
 })
+
+test('text typed as an answer reaches Claude in English; a picked option is sent as it is; the row shows what was typed', { options: { api_key: 'k' } }, async ($, on) => {
+  mock.clock(on)
+  translator(on)
+  // The engine's dialog, stood in for beneath the plugin: the user typed the first answer and picked the second
+  on('tool.call', { tool: 'AskUserQuestion' }, async ($: any, e: any) => ({
+    result: { questions: e.questions, answers: { 'Which one do you want?': '我想要第三个', 'Confirm?': 'Yes' } },
+  }))
+  let seen: any = null
+  on('ui.render', { component: 'ToolResult' }, async ($: any, e: any) => {
+    seen = e.props.output
+    return $.ui.resolve(e).Text({ children: 'result' })
+  })
+  const questions = [...QUESTIONS, { question: 'Confirm?', header: 'Go', multiSelect: false, options: [{ label: 'Yes', description: 'Go ahead' }, { label: 'No', description: 'Stop' }] }]
+  const r: any = await $.tool.call({ tool: 'AskUserQuestion', questions } as any)
+  expect(r.result.answers).toEqual({ 'Which one do you want?': 'EN: 我想要第三个', 'Confirm?': 'Yes' })
+  await $.ui.render({ component: 'ToolResult', surface: 'terminal', props: { tool_use_id: 'toolu_a', tool: 'AskUserQuestion', output: r.result, isErrored: false } } as any)
+  expect(Object.values(seen.answers)).toEqual(['我想要第三个 (EN: 我想要第三个)', 'Yes'])
+})

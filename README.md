@@ -5,7 +5,8 @@ A [Claude Code mod](https://code.claude.com/docs/en/plugins/mods/overview) that 
 - **Your prompts:** a prompt in your language is translated to English before Claude reads it. Your message row shows what you typed, with the English that was sent dimmed underneath. A prompt that's already in English is sent as typed.
 - **Claude's replies:** each text block of a reply gets a translation into your language in a dim box underneath. It streams in as it's generated and renders as Markdown. A block that's already in your language gets no box.
 - **Questions and tool rows:** when Claude asks you a question (the AskUserQuestion dialog), the question is drawn with its translation on the line under it, each option's description with its translation after an arrow, and the header chip translated. An option's label is the answer Claude receives, so it stays English; its translation starts the description's translation. The title of a tool row (the description of a Bash command or a subagent) gets its translation under it too. The row that records your answers (`User answered Claude's questions`) draws each question bilingual as well.
-- **The conversation stays English.** Translations of replies are display-only, so the history Claude reads isn't changed. The one thing that does change is your prompt: Claude receives the English version.
+- **Typed answers:** text you type as an answer to a question (under "Other", or in a text question) is translated to English before Claude reads it, like a prompt; the answer row shows what you typed with the English in parentheses. An option you pick is sent as it is.
+- **The conversation stays English.** Translations of replies are display-only, so the history Claude reads isn't changed. What does change is your input: Claude receives the English version of your prompts and of the answers you type.
 
 ## Requirements
 
@@ -73,6 +74,7 @@ apple/FanyiApple.swift       on-device helper: NaturalLanguage detection, Transl
 ```
 
 - `prompt.submit` sends each prompt to the translator, which translates it to English or says it needs no translation.
+- `tool.call` on `AskUserQuestion` translates the text you typed as an answer to English before Claude reads it.
 - `session.append` starts a translation for each reply text block once it's stored. It runs in the background, so Claude's next step isn't held up.
 - `ui.render` on `AssistantMessage` keeps Claude Code's own drawing of the reply and adds the translation box under it, redrawn as the translation streams in.
 - `ui.render` on `UserMessage` shows your original prompt, with the English under it.
