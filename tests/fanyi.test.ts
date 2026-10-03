@@ -16,7 +16,7 @@ test('a reply block with no translation draws unchanged', { options: { api_key: 
 })
 
 // The translator server, stood in for beneath the plugin: `fail` attempts fail first.
-function translator(on: any, { fail = 0, offline = 0, apple = null as any } = {}) {
+function translator(on: any, { fail = 0, offline = 0, apple = null as any, mergeBatches = false } = {}) {
   const calls: string[] = []
   let failures = fail
   // The server is not connected for its first `offline` connection attempts (a session starting)
@@ -45,7 +45,14 @@ function translator(on: any, { fail = 0, offline = 0, apple = null as any } = {}
     if (e.tool === 'capabilities') return { value: { content: [{ type: 'text', text: JSON.stringify({ apple: apple ?? { available: true } }) }] } }
     if (e.tool === 'translate') {
       const text = e.args?.text ?? ''
-      return { value: { content: [{ type: 'text', text: JSON.stringify(/^Already /.test(text) ? { skipped: true } : { text: 'EN: ' + text }) }] } }
+      if (/^Already /.test(text)) return { value: { content: [{ type: 'text', text: JSON.stringify({ skipped: true }) }] } }
+      // To the user's language: each numbered line of a batch translated in place, unless the
+      // stand-in is told to merge them (a model that ignores the numbering)
+      if (e.args?.to === 'local') {
+        const out = mergeBatches && /\n/.test(text) ? '译:' + text.replace(/\n/g, ' ') : text.split('\n').map((l: string) => l.replace(/^(\d+\. )?/, '$1译:')).join('\n')
+        return { value: { content: [{ type: 'text', text: JSON.stringify({ text: out }) }] } }
+      }
+      return { value: { content: [{ type: 'text', text: JSON.stringify({ text: 'EN: ' + text }) }] } }
     }
     if (e.tool === 'translate_poll') return { value: { content: [{ type: 'text', text: JSON.stringify({ text: '译文：' + 'ok', done: true, error: null }) }] } }
     return { value: { isError: true, content: [{ type: 'text', text: 'unexpected ' + e.tool }] } }
@@ -256,4 +263,83 @@ test('an API key entered in the pane is saved through the translator, and the pa
   const drawn = await pane($)
   expect(shows(drawn, '…wxyz')).toBe(true)
   expect(shows(drawn, 'sk-secret')).toBe(false)
+})
+
+// The question dialog and tool rows: short strings translated in one batch and drawn in place
+
+const QUESTIONS = [
+  {
+    question: 'Which one do you want?',
+    header: 'Choice',
+    multiSelect: false,
+    options: [
+      { label: 'Alpha', description: 'The first one' },
+      { label: 'Beta', description: 'The second one' },
+    ],
+  },
+]
+const askDialog = ($: any, on: any) => {
+  let seen: any = null
+  on('ui.render', { component: 'AskUserQuestion' }, async ($: any, e: any) => {
+    seen = e.props.questions
+    return $.ui.resolve(e).Text({ children: 'dialog' })
+  })
+  return async () => {
+    await $.ui.render({ component: 'AskUserQuestion', surface: 'terminal', props: { tool: 'AskUserQuestion', questions: QUESTIONS } } as any)
+    return seen
+  }
+}
+
+test('the question dialog draws the English first, then its translation with the labels kept', { options: { api_key: 'k' } }, async ($, on) => {
+  const clock = mock.clock(on)
+  const calls = translator(on)
+  const draw = askDialog($, on)
+  expect(await draw()).toEqual(QUESTIONS)
+  await clock.advance(100)
+  expect(calls.filter((c) => c === 'translate').length).toBe(1)
+  expect((calls as any).lastArgs.to).toBe('local')
+  expect((calls as any).lastArgs.text).toBe('1. Which one do you want?\n2. Choice\n3. Alpha\n4. The first one\n5. Beta\n6. The second one')
+  const drawn = await draw()
+  expect(drawn[0].question).toBe('译:Which one do you want?')
+  expect(drawn[0].header).toBe('译:Choice')
+  expect(drawn[0].multiSelect).toBe(false)
+  expect(drawn[0].options.map((o: any) => o.label)).toEqual(['Alpha', 'Beta'])
+  expect(drawn[0].options[0].description).toBe('译:Alpha · 译:The first one')
+  expect(drawn[0].options[1].description).toBe('译:Beta · 译:The second one')
+})
+
+test('a batch the model merged is translated phrase by phrase instead', { options: { api_key: 'k' } }, async ($, on) => {
+  const clock = mock.clock(on)
+  const calls = translator(on, { mergeBatches: true })
+  const draw = askDialog($, on)
+  await draw()
+  await clock.advance(100)
+  // One batch, then one call per phrase
+  expect(calls.filter((c) => c === 'translate').length).toBe(7)
+  const drawn = await draw()
+  expect(drawn[0].question).toBe('译:Which one do you want?')
+  expect(drawn[0].options[1].description).toBe('译:Beta · 译:The second one')
+})
+
+test('a tool row whose title is its description shows it translated', { options: { api_key: 'k' } }, async ($, on) => {
+  const clock = mock.clock(on)
+  const calls = translator(on)
+  let seen: any = null
+  on('ui.render', { component: 'ToolUse' }, async ($: any, e: any) => {
+    seen = e.props.input
+    return $.ui.resolve(e).Text({ children: 'row' })
+  })
+  const row = (input: any) =>
+    $.ui.render({ component: 'ToolUse', surface: 'terminal', props: { tool_use_id: 'toolu_1', tool: 'Bash', input, isRunning: false, isErrored: false, isInterrupted: false } } as any)
+  await row({ command: 'ls', description: 'List the files' })
+  expect(seen.description).toBe('List the files')
+  await clock.advance(100)
+  await row({ command: 'ls', description: 'List the files' })
+  expect(seen).toEqual({ command: 'ls', description: '译:List the files' })
+  // A row with no description is left alone and costs no call
+  const before = calls.filter((c) => c === 'translate').length
+  await row({ file_path: '/tmp/x' })
+  expect(seen).toEqual({ file_path: '/tmp/x' })
+  await clock.advance(100)
+  expect(calls.filter((c) => c === 'translate').length).toBe(before)
 })

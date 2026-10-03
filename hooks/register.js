@@ -135,7 +135,9 @@ async function updateSettings($, change) {
   if (['engine', 'language', 'base_url', 'model'].some((k) => settings[k] !== prev[k])) {
     generation++
     replies.clear()
+    phrases.clear()
     waiting.length = 0
+    queued.length = 0
   }
   $.ui.invalidate('ui.render')
 }
@@ -345,6 +347,150 @@ async function entryFor($, text) {
   return entry
 }
 
+// Short strings the engine draws that aren't reply blocks: a question dialog's text and a
+// tool row's title. Translated in one request per batch and drawn in place of the English.
+// Trimmed text → translation ('' when it needs none)
+const phrases = new Map()
+// Trimmed texts whose translation is running
+const pending = new Set()
+// Trimmed texts waiting for the next batch
+const queued = []
+let batchTimer = null
+
+// The translations of `texts`, each undefined while its translation is still running or
+// when the text needs none; a text not seen yet is queued for the next batch
+async function translations($, texts) {
+  const s = await loadSaved($)
+  const out = []
+  for (const text of texts) {
+    const key = typeof text === 'string' ? text.trim() : ''
+    if (!key) {
+      out.push(undefined)
+      continue
+    }
+    let hit = phrases.get(key)
+    if (hit === undefined) {
+      hit = s.replies.get(blockKey(key))
+      if (hit !== undefined) remember(phrases, key, hit)
+    }
+    if (hit !== undefined) {
+      out.push(hit || undefined)
+      continue
+    }
+    out.push(undefined)
+    if (!pending.has(key)) {
+      pending.add(key)
+      queued.push(key)
+      if (!batchTimer) batchTimer = $.clock.after(0, () => flushPhrases($))
+    }
+  }
+  return out
+}
+
+// Translates every queued phrase, retrying a failed batch; a batch that fails for good is
+// forgotten, so the next draw of its phrases tries again
+async function flushPhrases($) {
+  batchTimer = null
+  const keys = queued.splice(0)
+  if (!keys.length) return
+  const gen = generation
+  let texts = null
+  let waited = 0
+  for (let attempt = 0; ; attempt++) {
+    try {
+      texts = await translateMany($, keys)
+      break
+    } catch (err) {
+      if (err instanceof NotConnected && waited < CONNECT_WAIT_MS) {
+        waited += CONNECT_POLL_MS
+        attempt--
+        await sleep($, CONNECT_POLL_MS)
+        continue
+      }
+      if (gen !== generation) break
+      logFailure($, err)
+      if (attempt >= RETRY_MS.length) break
+      await sleep($, RETRY_MS[attempt])
+    }
+  }
+  for (const key of keys) pending.delete(key)
+  if (!texts || gen !== generation) return
+  keys.forEach((key, i) => {
+    remember(phrases, key, texts[i])
+    save($, 'replies', blockKey(key), texts[i])
+  })
+  $.ui.invalidate('ui.render')
+}
+
+// One translator call, distinguishing a text that needs no translation ('') from a failure (throws)
+async function translateOnce($, text) {
+  const r = JSON.parse(await callTool($, 'translate', { text, to: 'local', session: await $.session.id(), ...(await settingArgs($)) }))
+  return r.skipped ? '' : r.text || ''
+}
+
+// A numbered line per phrase, the translator's output split back by the numbers
+const LINE = /^\s*(\d+)\s*[.)、．]\s*(.*?)\s*$/
+function translateMany($, keys) {
+  if (keys.length === 1) return translateOnce($, keys[0]).then((t) => [t])
+  const batch = keys.map((key, i) => i + 1 + '. ' + key.replace(/\s*\n\s*/g, ' ')).join('\n')
+  return translateOnce($, batch).then(async (out) => {
+    if (out === '') return keys.map(() => '')
+    const texts = new Array(keys.length)
+    let n = 0
+    for (const line of out.split('\n')) {
+      const m = line.match(LINE)
+      const i = m ? Number(m[1]) - 1 : -1
+      if (m && i >= 0 && i < keys.length && texts[i] === undefined) {
+        texts[i] = m[2]
+        n++
+      }
+    }
+    if (n === keys.length && texts.every((t) => t)) return texts
+    // The model dropped or merged lines: translate them one by one instead
+    const each = []
+    for (const key of keys) each.push(await translateOnce($, key))
+    return each
+  })
+}
+
+// The question dialog's questions with their text translated, drawn in place of the English.
+// An option's label is what Claude receives as the answer and the dialog refuses a rewrite of
+// it, so its translation goes in front of the option's description instead.
+async function translateQuestions($, asked) {
+  const texts = []
+  for (const q of asked) {
+    texts.push(q.question, q.header, q.description, q.placeholder)
+    for (const o of q.options || []) texts.push(o.label, o.description)
+  }
+  const got = await translations($, texts)
+  if (got.every((t) => t === undefined)) return null
+  let i = 0
+  const take = (original) => got[i++] ?? original
+  return asked.map((q) => {
+    const question = take(q.question)
+    const header = take(q.header)
+    const description = take(q.description)
+    const placeholder = take(q.placeholder)
+    const out = {
+      ...q,
+      question,
+      // The dialog draws the header as a short chip; a translation that outgrows it stays English
+      header: typeof header === 'string' && header.length <= 12 ? header : q.header,
+      ...(typeof q.description === 'string' && { description }),
+      ...(typeof q.placeholder === 'string' && { placeholder }),
+    }
+    if (Array.isArray(q.options)) {
+      out.options = q.options.map((o) => {
+        const label = take(o.label)
+        const desc = take(o.description)
+        const parts = [label !== o.label ? label : '', typeof desc === 'string' ? desc : ''].filter(Boolean)
+        return parts.length ? { ...o, description: parts.join(' · ') } : o
+      })
+    }
+    return out
+  })
+}
+
 // The settings pane, and what it offers
 const PANE = 'fanyi-settings'
 const LANGUAGES = [
@@ -434,7 +580,7 @@ async function openSettings($) {
   if (!appleCaps) $.clock.after(0, () => loadCapabilities($))
   $.clock.after(0, () => loadKeyStatus($))
   if (!modelList || modelList.error) $.clock.after(0, () => loadModels($))
-  await $.ui.open({ id: PANE, title: 'Fanyi settings', focus: true, closeOnEscape: true, rows: 22 })
+  await $.ui.open({ id: PANE, title: 'Fanyi settings', focus: true, closeOnEscape: true, rows: 22, columns: 64 })
 }
 
 // Switches the engine, refusing Apple's when this machine can't run it
@@ -462,24 +608,24 @@ function apiSection($, s, { Box, Text, Select, Button, Input }) {
   const keyText = !keyStatus
     ? 'checking…'
     : keyStatus.isSet
-      ? 'set ' + keyStatus.hint + (keyStatus.source === 'config' ? ' (from /plugin configure)' : keyStatus.source === 'keychain' ? ' (in the macOS Keychain)' : ' (saved)')
+      ? 'set ' + keyStatus.hint + (keyStatus.source === 'config' ? ' (plugin config)' : keyStatus.source === 'keychain' ? ' (Keychain)' : ' (saved)')
       : 'not set'
   const models = modelList && modelList.models ? modelList.models : []
   const options = (models.includes(s.model) ? models : [s.model, ...models]).map((id) => ({ value: id, label: id }))
   const listNote = !modelList || modelList.loading ? 'Loading models…' : modelList.error ? 'Could not list models: ' + modelList.error : models.length + ' models'
   return [
     Box({ marginTop: 1, children: [Text({ bold: true, children: 'API' })] }),
-    Input({ key: 'fanyi-base-url', label: 'Host  ', value: s.base_url, placeholder: 'https://api.example.com/v1', submitLabel: 'Save', onSubmit: (v) => saveBaseUrl($, v) }),
-    Input({ key: 'fanyi-api-key', label: 'Key  ', value: '', placeholder: keyText + ' · paste a new key and press Enter; submit empty to remove', submitLabel: 'Save', onSubmit: (v) => saveApiKey($, v) }),
+    Input({ key: 'fanyi-base-url', label: 'Host', value: s.base_url, placeholder: 'https://api.example.com/v1', submitLabel: 'Save', onSubmit: (v) => saveBaseUrl($, v) }),
+    Input({ key: 'fanyi-api-key', label: 'Key', value: '', placeholder: keyText + ' · paste a new one, Enter', submitLabel: 'Save', onSubmit: (v) => saveApiKey($, v) }),
     Box({
       flexDirection: 'row',
       gap: 1,
       children: [
-        Select({ key: 'fanyi-model', label: 'Model  ', value: s.model, options, onSelect: (v) => updateSettings($, { model: v }) }),
+        Select({ key: 'fanyi-model', label: 'Model', value: s.model, options, onSelect: (v) => updateSettings($, { model: v }) }),
         Button({ key: 'fanyi-refresh-models', label: '↻ Refresh', plain: true, dimColor: true, onPress: () => loadModels($) }),
       ],
     }),
-    Input({ key: 'fanyi-model-id', label: '  or type a model id  ', value: '', placeholder: 'for an API that lists no models', submitLabel: 'Use', onSubmit: (v) => v.trim() && updateSettings($, { model: v.trim() }) }),
+    Input({ key: 'fanyi-model-id', label: 'Custom model', value: '', placeholder: 'model id, for an API that lists none', submitLabel: 'Use', onSubmit: (v) => v.trim() && updateSettings($, { model: v.trim() }) }),
     Text({ dimColor: true, children: listNote }),
   ]
 }
@@ -549,7 +695,7 @@ export function register(on, options = {}) {
       children: [
         Select({
           key: 'fanyi-enabled',
-          label: 'Translation  ',
+          label: 'Translation',
           value: s.enabled ? 'on' : 'off',
           options: [
             { value: 'on', label: 'On' },
@@ -560,7 +706,7 @@ export function register(on, options = {}) {
         }),
         Select({
           key: 'fanyi-engine',
-          label: 'Engine  ',
+          label: 'Engine',
           value: s.engine,
           options: [
             { value: 'api', label: 'API · ' + s.model },
@@ -570,14 +716,14 @@ export function register(on, options = {}) {
         }),
         Select({
           key: 'fanyi-language',
-          label: 'Your language  ',
+          label: 'Your language',
           value: s.language,
           options: languages.map(([value, label]) => ({ value, label })),
           onSelect: (v) => updateSettings($, { language: v }),
         }),
         Select({
           key: 'fanyi-detection',
-          label: 'Language detection  ',
+          label: 'Detection',
           value: s.detection,
           options: [
             { value: 'device', label: 'On this Mac' },
@@ -664,8 +810,31 @@ export function register(on, options = {}) {
     const { Box, Text } = $.ui.resolve(e)
     return Box({
       flexDirection: 'column',
-      children: [drawn, Text({ dimColor: true, children: '  → ' + e.props.text })],
+      // Indented as a whole, so a long line wraps under itself
+      children: [drawn, Box({ marginLeft: 2, children: [Text({ dimColor: true, children: '→ ' + e.props.text })] })],
     })
+  })
+
+  // Display: the question dialog (AskUserQuestion) with its question, header and descriptions
+  // translated. The dialog maps the answer back to the English question, so Claude reads the
+  // same answer it would have without the mod.
+  on('ui.render', { component: 'AskUserQuestion' }, async ($, e, next) => {
+    if (!(await isEnabled($))) return next(e)
+    const asked = e.props.questions
+    if (!Array.isArray(asked) || !asked.every((q) => q && typeof q === 'object')) return next(e)
+    const questions = await translateQuestions($, asked)
+    if (!questions) return next(e)
+    return next({ ...e, props: { ...e.props, questions } })
+  })
+
+  // Display: a tool row whose title is the call's `description` (Bash, Agent) shows it translated
+  on('ui.render', { component: 'ToolUse' }, async ($, e, next) => {
+    if (!(await isEnabled($))) return next(e)
+    const input = e.props.input
+    if (!input || typeof input !== 'object' || typeof input.description !== 'string') return next(e)
+    const [description] = await translations($, [input.description])
+    if (!description) return next(e)
+    return next({ ...e, props: { ...e.props, input: { ...input, description } } })
   })
 
   // The translator tools are for this mod only: let its own calls through, refuse Claude's

@@ -4,6 +4,7 @@ A [Claude Code mod](https://code.claude.com/docs/en/plugins/mods/overview) that 
 
 - **Your prompts:** a prompt in your language is translated to English before Claude reads it. Your message row shows what you typed, with the English that was sent dimmed underneath. A prompt that's already in English is sent as typed.
 - **Claude's replies:** each text block of a reply gets a translation into your language in a dim box underneath. It streams in as it's generated and renders as Markdown. A block that's already in your language gets no box.
+- **Questions and tool rows:** when Claude asks you a question (the AskUserQuestion dialog), the question, its header and each option's description are drawn translated. An option's label is the answer Claude receives, so it stays English, with its translation in front of the description. The title of a tool row (the description of a Bash command or a subagent) is drawn translated too.
 - **The conversation stays English.** Translations of replies are display-only, so the history Claude reads isn't changed. The one thing that does change is your prompt: Claude receives the English version.
 
 ## Requirements
@@ -75,6 +76,7 @@ apple/FanyiApple.swift       on-device helper: NaturalLanguage detection, Transl
 - `session.append` starts a translation for each reply text block once it's stored. It runs in the background, so Claude's next step isn't held up.
 - `ui.render` on `AssistantMessage` keeps Claude Code's own drawing of the reply and adds the translation box under it, redrawn as the translation streams in.
 - `ui.render` on `UserMessage` shows your original prompt, with the English under it.
+- `ui.render` on `AskUserQuestion` and `ToolUse` rewrites the dialog's questions and a tool row's description with their translations. The short strings of one draw are translated in one request; a saved translation is drawn from the store.
 - `ui.render` on `AbovePrompt` draws the toggle, and on a `Pane` the settings.
 - `tool.call` refuses the translator tools when Claude calls them. They're for the mod only.
 
@@ -91,6 +93,8 @@ With the Apple engine, Markdown is split before translation: code blocks, inline
 - Prompts are always translated to English, the language Claude works in.
 - Prompts that start with `/` or `!` are never translated.
 - Subagents' replies aren't translated.
+- The dim `summary` line Claude Code draws before a tool call is a thinking block, which plugins can't redraw, so it stays English. A question's option labels stay English too (see above).
+- A question dialog and a tool row show the English until their translation arrives, about a second later.
 - Finished translations are saved in the plugin's own store, per engine and language, so after a restart or `/resume` a reply that was translated before is drawn from it. About 3 MB of the newest translations are kept.
 - A failed translation is retried twice (after 2 s and 6 s); at most 3 translations run at once.
 
