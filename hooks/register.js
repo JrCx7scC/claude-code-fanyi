@@ -455,10 +455,13 @@ function translateMany($, keys) {
 
 // A text with its translation on the line under it, as the reply boxes show them
 const bilingual = (original, translated) => (translated && translated !== original ? original + '\n' + translated : original)
+// The same on one line, for a field the dialog draws as a single line (an option's description)
+const inline = (original, translated) => (translated && translated !== original ? original + ' → ' + translated : original)
 
-// The question dialog's questions, each text drawn with its translation under it. An option's
-// label is what Claude receives as the answer and the dialog refuses a rewrite of it, so its
-// translation goes under the option's description instead.
+// The question dialog's questions, the question drawn with its translation under it and each
+// option's description with its translation after it (the dialog draws a description as one
+// line). An option's label is what Claude receives as the answer and the dialog refuses a
+// rewrite of it, so its translation starts the description's translation instead.
 async function translateQuestions($, asked) {
   const texts = []
   for (const q of asked) {
@@ -480,8 +483,8 @@ async function translateQuestions($, asked) {
       // The dialog draws the header as a short chip, with room for one language only; a
       // translation that outgrows it stays English
       header: typeof header === 'string' && header.length <= 12 ? header : q.header,
-      ...(typeof q.description === 'string' && { description: bilingual(q.description, description) }),
-      ...(typeof q.placeholder === 'string' && { placeholder: bilingual(q.placeholder, placeholder) }),
+      ...(typeof q.description === 'string' && { description: inline(q.description, description) }),
+      ...(typeof q.placeholder === 'string' && { placeholder: inline(q.placeholder, placeholder) }),
     }
     if (Array.isArray(q.options)) {
       out.options = q.options.map((o) => {
@@ -489,11 +492,33 @@ async function translateQuestions($, asked) {
         const desc = take(o.description)
         const translated = [label !== o.label ? label : '', desc !== o.description ? desc : ''].filter(Boolean).join(' · ')
         if (!translated) return o
-        return { ...o, description: typeof o.description === 'string' && o.description ? o.description + '\n' + translated : translated }
+        return { ...o, description: typeof o.description === 'string' && o.description ? inline(o.description, translated) : translated }
       })
     }
     return out
   })
+}
+
+// The transcript row of an answered question (AskUserQuestion: `User answered Claude's
+// questions`) with each question drawn bilingual. The row pairs answers with questions by the
+// question's text, so the texts in the call's input, in its result and in the result's answer
+// keys change together.
+async function translateAnswered($, input, output) {
+  const lists = [input && input.questions, output && output.questions].filter(Array.isArray)
+  if (!lists.length) return null
+  const texts = [...new Set(lists.flat().map((q) => q && q.question).filter((q) => typeof q === 'string'))]
+  const got = await translations($, texts)
+  if (got.every((t) => t === undefined)) return null
+  const drawn = new Map(texts.map((t, i) => [t, bilingual(t, got[i])]))
+  const questions = (list) => (Array.isArray(list) ? list.map((q) => (q && drawn.has(q.question) ? { ...q, question: drawn.get(q.question) } : q)) : list)
+  const rekey = (obj) => (obj && typeof obj === 'object' && !Array.isArray(obj) ? Object.fromEntries(Object.entries(obj).map(([k, v]) => [drawn.get(k) ?? k, v])) : obj)
+  return {
+    input: input && Array.isArray(input.questions) ? { ...input, questions: questions(input.questions) } : input,
+    output:
+      output && typeof output === 'object'
+        ? { ...output, ...(Array.isArray(output.questions) && { questions: questions(output.questions) }), ...(output.answers && { answers: rekey(output.answers) }), ...(output.annotations && { annotations: rekey(output.annotations) }) }
+        : output,
+  }
 }
 
 // The settings pane, and what it offers
@@ -837,10 +862,21 @@ export function register(on, options = {}) {
   on('ui.render', { component: 'ToolUse' }, async ($, e, next) => {
     if (!(await isEnabled($))) return next(e)
     const input = e.props.input
+    if (e.props.tool === 'AskUserQuestion') {
+      const t = await translateAnswered($, input, e.props.output)
+      return next(t ? { ...e, props: { ...e.props, input: t.input, ...(e.props.output !== undefined && { output: t.output }) } } : e)
+    }
     if (!input || typeof input !== 'object' || typeof input.description !== 'string') return next(e)
     const [translated] = await translations($, [input.description])
     if (!translated) return next(e)
     return next({ ...e, props: { ...e.props, input: { ...input, description: bilingual(input.description, translated) } } })
+  })
+
+  // Display: the result row of an answered question, where the questions are drawn bilingual
+  on('ui.render', { component: 'ToolResult' }, async ($, e, next) => {
+    if (e.props.tool !== 'AskUserQuestion' || e.props.isErrored || !(await isEnabled($))) return next(e)
+    const t = await translateAnswered($, null, e.props.output)
+    return next(t ? { ...e, props: { ...e.props, output: t.output } } : e)
   })
 
   // The translator tools are for this mod only: let its own calls through, refuse Claude's

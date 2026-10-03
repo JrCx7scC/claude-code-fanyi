@@ -290,7 +290,7 @@ const askDialog = ($: any, on: any) => {
   }
 }
 
-test('the question dialog draws the English first, then each text with its translation under it, labels kept', { options: { api_key: 'k' } }, async ($, on) => {
+test('the question dialog draws the English first, then the question with its translation under it and each description with its translation after it, labels kept', { options: { api_key: 'k' } }, async ($, on) => {
   const clock = mock.clock(on)
   const calls = translator(on)
   const draw = askDialog($, on)
@@ -304,8 +304,8 @@ test('the question dialog draws the English first, then each text with its trans
   expect(drawn[0].header).toBe('译:Choice')
   expect(drawn[0].multiSelect).toBe(false)
   expect(drawn[0].options.map((o: any) => o.label)).toEqual(['Alpha', 'Beta'])
-  expect(drawn[0].options[0].description).toBe('The first one\n译:Alpha · 译:The first one')
-  expect(drawn[0].options[1].description).toBe('The second one\n译:Beta · 译:The second one')
+  expect(drawn[0].options[0].description).toBe('The first one → 译:Alpha · 译:The first one')
+  expect(drawn[0].options[1].description).toBe('The second one → 译:Beta · 译:The second one')
 })
 
 test('a batch the model merged is translated phrase by phrase instead', { options: { api_key: 'k' } }, async ($, on) => {
@@ -318,7 +318,7 @@ test('a batch the model merged is translated phrase by phrase instead', { option
   expect(calls.filter((c) => c === 'translate').length).toBe(7)
   const drawn = await draw()
   expect(drawn[0].question).toBe('Which one do you want?\n译:Which one do you want?')
-  expect(drawn[0].options[1].description).toBe('The second one\n译:Beta · 译:The second one')
+  expect(drawn[0].options[1].description).toBe('The second one → 译:Beta · 译:The second one')
 })
 
 test('a tool row whose title is its description shows the translation under it', { options: { api_key: 'k' } }, async ($, on) => {
@@ -342,4 +342,33 @@ test('a tool row whose title is its description shows the translation under it',
   expect(seen).toEqual({ file_path: '/tmp/x' })
   await clock.advance(100)
   expect(calls.filter((c) => c === 'translate').length).toBe(before)
+})
+
+test('the row of an answered question draws each question bilingual, its answers re-keyed to match', { options: { api_key: 'k' } }, async ($, on) => {
+  const clock = mock.clock(on)
+  translator(on)
+  let seen: any = null
+  on('ui.render', { component: 'ToolUse' }, async ($: any, e: any) => {
+    seen = e.props
+    return $.ui.resolve(e).Text({ children: 'row' })
+  })
+  let result: any = null
+  on('ui.render', { component: 'ToolResult' }, async ($: any, e: any) => {
+    result = e.props.output
+    return $.ui.resolve(e).Text({ children: 'result' })
+  })
+  const output = { questions: QUESTIONS, answers: { 'Which one do you want?': 'Alpha' }, annotations: { 'Which one do you want?': { notes: 'n' } } }
+  const row = () =>
+    $.ui.render({ component: 'ToolUse', surface: 'terminal', props: { tool_use_id: 'toolu_q', tool: 'AskUserQuestion', input: { questions: QUESTIONS }, output, isRunning: false, isErrored: false, isInterrupted: false } } as any)
+  await row()
+  await clock.advance(100)
+  await row()
+  const q = 'Which one do you want?\n译:Which one do you want?'
+  expect(seen.input.questions[0].question).toBe(q)
+  expect(seen.output.questions[0].question).toBe(q)
+  expect(seen.output.answers).toEqual({ [q]: 'Alpha' })
+  expect(seen.output.annotations).toEqual({ [q]: { notes: 'n' } })
+  await $.ui.render({ component: 'ToolResult', surface: 'terminal', props: { tool_use_id: 'toolu_q', tool: 'AskUserQuestion', output, isErrored: false } } as any)
+  expect(result.questions[0].question).toBe(q)
+  expect(result.answers).toEqual({ [q]: 'Alpha' })
 })
