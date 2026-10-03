@@ -1,0 +1,14 @@
+{
+  "name": "claude-code-fanyi",
+  "description": "The fanyi Claude Code mod",
+  "owner": {
+    "name": "jax"
+  },
+  "plugins": [
+    {
+      "name": "fanyi",
+      "source": "./",
+      "description": "Write to Claude Code in your own language while Claude works in English, with streamed translations of every reply."
+    }
+  ]
+}

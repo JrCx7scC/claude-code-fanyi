@@ -1,0 +1,58 @@
+{
+  "name": "fanyi",
+  "displayName": "Fanyi",
+  "version": "0.11.0",
+  "description": "Write to Claude Code in your own language while Claude works in English: prompts are translated to English, and each reply gets a streamed translation underneath.",
+  "author": {
+    "name": "jax"
+  },
+  "repository": "https://github.com/JrCx7scC/claude-code-fanyi",
+  "license": "MIT",
+  "keywords": [
+    "mod",
+    "translation",
+    "i18n",
+    "localization",
+    "on-device"
+  ],
+  "userConfig": {
+    "api_key": {
+      "type": "string",
+      "title": "API key",
+      "description": "API key for the translation endpoint. You can also enter it in the settings pane (/fanyi settings), which keeps it in the macOS Keychain.",
+      "sensitive": true
+    },
+    "base_url": {
+      "type": "string",
+      "title": "Base URL",
+      "description": "Initial API host; change it in the settings pane",
+      "default": "https://opencode.ai/zen/go/v1"
+    },
+    "model": {
+      "type": "string",
+      "title": "Translation model",
+      "description": "Initial model id; pick another from the list in the settings pane",
+      "default": "deepseek-v4.1-flash"
+    },
+    "disable_thinking": {
+      "type": "boolean",
+      "title": "Disable reasoning",
+      "description": "Send thinking: { type: \"disabled\" } for faster translations. Turn off if your provider rejects the field.",
+      "default": true
+    }
+  },
+  "mcpServers": {
+    "translator": {
+      "command": "node",
+      "args": [
+        "${CLAUDE_PLUGIN_ROOT}/mcp/translator.mjs"
+      ],
+      "env": {
+        "FANYI_API_KEY": "${user_config.api_key}",
+        "FANYI_BASE_URL": "${user_config.base_url}",
+        "FANYI_MODEL": "${user_config.model}",
+        "FANYI_DISABLE_THINKING": "${user_config.disable_thinking}"
+      }
+    }
+  }
+}
