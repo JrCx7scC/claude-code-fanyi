@@ -4,7 +4,7 @@ A [Claude Code mod](https://code.claude.com/docs/en/plugins/mods/overview) that 
 
 - **Your prompts:** a prompt in your language is translated to English before Claude reads it. Your message row shows what you typed, with the English that was sent dimmed underneath. A prompt that's already in English is sent as typed.
 - **Claude's replies:** each text block of a reply gets a translation into your language in a dim box underneath. It streams in as it's generated and renders as Markdown. A block that's already in your language gets no box.
-- **Questions and tool rows:** when Claude asks you a question (the AskUserQuestion dialog), the question, its header and each option's description are drawn translated. An option's label is the answer Claude receives, so it stays English, with its translation in front of the description. The title of a tool row (the description of a Bash command or a subagent) is drawn translated too.
+- **Questions and tool rows:** when Claude asks you a question (the AskUserQuestion dialog), the question and each option's description are drawn with their translation on the line under them, and the header chip is translated. An option's label is the answer Claude receives, so it stays English; its translation starts the line under the description. The title of a tool row (the description of a Bash command or a subagent) gets its translation under it too.
 - **The conversation stays English.** Translations of replies are display-only, so the history Claude reads isn't changed. The one thing that does change is your prompt: Claude receives the English version.
 
 ## Requirements

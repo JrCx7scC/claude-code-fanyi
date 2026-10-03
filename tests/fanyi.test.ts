@@ -290,7 +290,7 @@ const askDialog = ($: any, on: any) => {
   }
 }
 
-test('the question dialog draws the English first, then its translation with the labels kept', { options: { api_key: 'k' } }, async ($, on) => {
+test('the question dialog draws the English first, then each text with its translation under it, labels kept', { options: { api_key: 'k' } }, async ($, on) => {
   const clock = mock.clock(on)
   const calls = translator(on)
   const draw = askDialog($, on)
@@ -300,12 +300,12 @@ test('the question dialog draws the English first, then its translation with the
   expect((calls as any).lastArgs.to).toBe('local')
   expect((calls as any).lastArgs.text).toBe('1. Which one do you want?\n2. Choice\n3. Alpha\n4. The first one\n5. Beta\n6. The second one')
   const drawn = await draw()
-  expect(drawn[0].question).toBe('译:Which one do you want?')
+  expect(drawn[0].question).toBe('Which one do you want?\n译:Which one do you want?')
   expect(drawn[0].header).toBe('译:Choice')
   expect(drawn[0].multiSelect).toBe(false)
   expect(drawn[0].options.map((o: any) => o.label)).toEqual(['Alpha', 'Beta'])
-  expect(drawn[0].options[0].description).toBe('译:Alpha · 译:The first one')
-  expect(drawn[0].options[1].description).toBe('译:Beta · 译:The second one')
+  expect(drawn[0].options[0].description).toBe('The first one\n译:Alpha · 译:The first one')
+  expect(drawn[0].options[1].description).toBe('The second one\n译:Beta · 译:The second one')
 })
 
 test('a batch the model merged is translated phrase by phrase instead', { options: { api_key: 'k' } }, async ($, on) => {
@@ -317,11 +317,11 @@ test('a batch the model merged is translated phrase by phrase instead', { option
   // One batch, then one call per phrase
   expect(calls.filter((c) => c === 'translate').length).toBe(7)
   const drawn = await draw()
-  expect(drawn[0].question).toBe('译:Which one do you want?')
-  expect(drawn[0].options[1].description).toBe('译:Beta · 译:The second one')
+  expect(drawn[0].question).toBe('Which one do you want?\n译:Which one do you want?')
+  expect(drawn[0].options[1].description).toBe('The second one\n译:Beta · 译:The second one')
 })
 
-test('a tool row whose title is its description shows it translated', { options: { api_key: 'k' } }, async ($, on) => {
+test('a tool row whose title is its description shows the translation under it', { options: { api_key: 'k' } }, async ($, on) => {
   const clock = mock.clock(on)
   const calls = translator(on)
   let seen: any = null
@@ -335,7 +335,7 @@ test('a tool row whose title is its description shows it translated', { options:
   expect(seen.description).toBe('List the files')
   await clock.advance(100)
   await row({ command: 'ls', description: 'List the files' })
-  expect(seen).toEqual({ command: 'ls', description: '译:List the files' })
+  expect(seen).toEqual({ command: 'ls', description: 'List the files\n译:List the files' })
   // A row with no description is left alone and costs no call
   const before = calls.filter((c) => c === 'translate').length
   await row({ file_path: '/tmp/x' })

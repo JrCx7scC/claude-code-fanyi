@@ -453,9 +453,12 @@ function translateMany($, keys) {
   })
 }
 
-// The question dialog's questions with their text translated, drawn in place of the English.
-// An option's label is what Claude receives as the answer and the dialog refuses a rewrite of
-// it, so its translation goes in front of the option's description instead.
+// A text with its translation on the line under it, as the reply boxes show them
+const bilingual = (original, translated) => (translated && translated !== original ? original + '\n' + translated : original)
+
+// The question dialog's questions, each text drawn with its translation under it. An option's
+// label is what Claude receives as the answer and the dialog refuses a rewrite of it, so its
+// translation goes under the option's description instead.
 async function translateQuestions($, asked) {
   const texts = []
   for (const q of asked) {
@@ -473,18 +476,20 @@ async function translateQuestions($, asked) {
     const placeholder = take(q.placeholder)
     const out = {
       ...q,
-      question,
-      // The dialog draws the header as a short chip; a translation that outgrows it stays English
+      question: bilingual(q.question, question),
+      // The dialog draws the header as a short chip, with room for one language only; a
+      // translation that outgrows it stays English
       header: typeof header === 'string' && header.length <= 12 ? header : q.header,
-      ...(typeof q.description === 'string' && { description }),
-      ...(typeof q.placeholder === 'string' && { placeholder }),
+      ...(typeof q.description === 'string' && { description: bilingual(q.description, description) }),
+      ...(typeof q.placeholder === 'string' && { placeholder: bilingual(q.placeholder, placeholder) }),
     }
     if (Array.isArray(q.options)) {
       out.options = q.options.map((o) => {
         const label = take(o.label)
         const desc = take(o.description)
-        const parts = [label !== o.label ? label : '', typeof desc === 'string' ? desc : ''].filter(Boolean)
-        return parts.length ? { ...o, description: parts.join(' · ') } : o
+        const translated = [label !== o.label ? label : '', desc !== o.description ? desc : ''].filter(Boolean).join(' · ')
+        if (!translated) return o
+        return { ...o, description: typeof o.description === 'string' && o.description ? o.description + '\n' + translated : translated }
       })
     }
     return out
@@ -816,8 +821,8 @@ export function register(on, options = {}) {
   })
 
   // Display: the question dialog (AskUserQuestion) with its question, header and descriptions
-  // translated. The dialog maps the answer back to the English question, so Claude reads the
-  // same answer it would have without the mod.
+  // drawn with their translations. The dialog maps the answer back to the English question, so
+  // Claude reads the same answer it would have without the mod.
   on('ui.render', { component: 'AskUserQuestion' }, async ($, e, next) => {
     if (!(await isEnabled($))) return next(e)
     const asked = e.props.questions
@@ -827,14 +832,15 @@ export function register(on, options = {}) {
     return next({ ...e, props: { ...e.props, questions } })
   })
 
-  // Display: a tool row whose title is the call's `description` (Bash, Agent) shows it translated
+  // Display: a tool row whose title is the call's `description` (Bash, Agent) shows the
+  // translation under it
   on('ui.render', { component: 'ToolUse' }, async ($, e, next) => {
     if (!(await isEnabled($))) return next(e)
     const input = e.props.input
     if (!input || typeof input !== 'object' || typeof input.description !== 'string') return next(e)
-    const [description] = await translations($, [input.description])
-    if (!description) return next(e)
-    return next({ ...e, props: { ...e.props, input: { ...input, description } } })
+    const [translated] = await translations($, [input.description])
+    if (!translated) return next(e)
+    return next({ ...e, props: { ...e.props, input: { ...input, description: bilingual(input.description, translated) } } })
   })
 
   // The translator tools are for this mod only: let its own calls through, refuse Claude's
