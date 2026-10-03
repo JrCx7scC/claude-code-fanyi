@@ -71,3 +71,24 @@ export function splitMarkdown(text) {
 
   return { segments, rebuild }
 }
+
+/**
+ * The prose of a Markdown text: code blocks, inline code, link targets and URLs removed. What
+ * language checks should look at, so identifiers and commands don't count as English.
+ * @param {string} text Markdown
+ * @returns {string}
+ */
+export function proseOf(text) {
+  let inFence = false
+  return text
+    .split('\n')
+    .filter((line) => {
+      if (FENCE.test(line)) {
+        inFence = !inFence
+        return false
+      }
+      return !inFence
+    })
+    .join('\n')
+    .replace(PROTECTED, ' ')
+}

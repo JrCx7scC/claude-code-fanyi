@@ -14,7 +14,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { createInterface } from 'node:readline'
 import { promisify } from 'node:util'
-import { splitMarkdown } from './markdown.mjs'
+import { proseOf, splitMarkdown } from './markdown.mjs'
 
 const CONFIG_KEY = process.env.FANYI_API_KEY || ''
 const DISABLE_THINKING = process.env.FANYI_DISABLE_THINKING !== 'false'
@@ -116,12 +116,28 @@ function describeLanguage(value) {
 
 const baseOf = (tag) => (tag ? tag.split(/[-_]/)[0].toLowerCase() : null)
 
+// Whether two tags name the same language in the same script: zh-Hans and zh-CN are the same,
+// zh-Hant and zh-Hans aren't, since translating between them is a real conversion
+function sameLanguage(a, b) {
+  try {
+    const x = new Intl.Locale(a).maximize()
+    const y = new Intl.Locale(b).maximize()
+    return x.language === y.language && x.script === y.script
+  } catch {
+    return baseOf(a) === baseOf(b)
+  }
+}
+
 // Whether a text needs translating: true or false when it can be decided here, null when only the
 // model can tell. In order: the script, for a language not written in Latin script; the
 // on-device recognizer, when detection is 'device' and it's available; otherwise the model.
 async function needsTranslation(text, to, settings) {
   const lang = describeLanguage(settings.language)
   if (lang.isEnglish) return false
+  // Judge the prose only: identifiers and commands in code would count as English
+  const prose = proseOf(text)
+  if (!/\p{L}/u.test(prose)) return false
+  text = prose
   if (lang.pattern) {
     const local = (text.match(lang.pattern) || []).length
     // Toward English: any text in the user's script. Toward the user's language: text that is
@@ -212,10 +228,12 @@ async function translateApple({ text, to }, settings) {
   let target = 'en'
   if (to === 'local') {
     // Claude usually writes English; ask the recognizer in case it didn't
-    const { language, confidence } = await helper({ op: 'detect', text })
+    const { language, confidence } = await helper({ op: 'detect', text: proseOf(text) })
     from = language && confidence >= MIN_CONFIDENCE ? language : 'en'
     target = lang.tag
   }
+  // Already in the target language (a mixed reply the script check let through): nothing to do
+  if (sameLanguage(from, target)) return SKIP
   const { segments, rebuild } = splitMarkdown(text)
   if (!segments.length) return text
   const { texts } = await helper({ op: 'translate', from, to: target, texts: segments })
